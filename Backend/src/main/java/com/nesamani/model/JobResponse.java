@@ -59,5 +59,5 @@ public class JobResponse {
     public void           setQuotedPrice(String p)   { this.quotedPrice = p; }
     public ResponseStatus getStatus()                { return status; }
     public void           setStatus(ResponseStatus s){ this.status = s; }
-
+    public LocalDateTime  getRespondedAt()           { return respondedAt; }
 }
