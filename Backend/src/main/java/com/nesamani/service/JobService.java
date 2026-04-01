@@ -58,11 +58,19 @@ public class JobService {
         jobRepo.delete(job);
     }
 
-    public List<Job> getOpenJobs(String category, String location) {
-        String cat = blank(category) ? null : category;
-        String loc = blank(location) ? null : location;
-        return jobRepo.searchOpenJobs(cat, loc);
+   public List<Job> getOpenJobs(String category, String location) {
+
+    // 🔥 FIX NULL ISSUE
+    if (category == null || category.isBlank()) {
+        category = null;
     }
+
+    if (location == null || location.isBlank()) {
+        location = null;
+    }
+
+    return jobRepo.findOpenJobs(category, location);
+}
 
     // ══════════════════════════════════════════════════════════
     //  SERVICES  (uploaded by PROVIDER — Flow B)

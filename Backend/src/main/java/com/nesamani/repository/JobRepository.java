@@ -12,17 +12,17 @@ public interface JobRepository extends JpaRepository<Job, Long> {
     List<Job> findByNeederOrderByCreatedAtDesc(User needer);
     List<Job> findByStatusOrderByCreatedAtDesc(Job.JobStatus status);
 
-    @Query("""
+   @Query("""
 SELECT j FROM Job j
 WHERE j.status = 'OPEN'
 AND (:category IS NULL OR LOWER(j.category) LIKE LOWER(CONCAT('%', :category, '%')))
 AND (:location IS NULL OR LOWER(j.location) LIKE LOWER(CONCAT('%', :location, '%')))
 ORDER BY j.createdAt DESC
 """)
-    List<Job> searchOpenJobs(
-        @Param("category") String category,
-        @Param("location") String location
-    );
+List<Job> findOpenJobs(
+    @Param("category") String category,
+    @Param("location") String location
+);
 
     long countByNeederAndStatus(User needer, Job.JobStatus status);
 }
