@@ -13,29 +13,6 @@ import org.springframework.web.bind.annotation.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * All endpoints for the PROVIDER role.
- * Requires: Bearer token with role = PROVIDER (ROLE_PROVIDER in Spring Security)
- *
- * GET  /api/provider/dashboard
- * POST /api/provider/services
- * GET  /api/provider/services
- * PUT  /api/provider/services/{id}
- * DEL  /api/provider/services/{id}
- * GET  /api/provider/jobs
- * POST /api/provider/jobs/{id}/respond
- * GET  /api/provider/responses
- * PUT  /api/provider/responses/{id}/withdraw
- * GET  /api/provider/bookings
- * PUT  /api/provider/bookings/{id}/accept
- * PUT  /api/provider/bookings/{id}/start
- * PUT  /api/provider/bookings/{id}/complete
- * PUT  /api/provider/profile
- *
- * PUBLIC (no token):
- * GET  /api/services?category=&location=
- * GET  /api/providers?category=&location=
- */
 @RestController
 @CrossOrigin(origins = "*")
 public class ProviderController {
@@ -43,41 +20,32 @@ public class ProviderController {
     @Autowired private JobService  jobService;
     @Autowired private UserService userService;
 
-    // ══════════════════════════════════════════════════════════
-    //  PUBLIC — no token needed
-    // ══════════════════════════════════════════════════════════
-
-    /** Browse all available services (used by needers in Browse Services page) */
+    // ── PUBLIC ────────────────────────────────────────────────
     @GetMapping("/api/services")
     public ResponseEntity<?> browseServices(
             @RequestParam(required = false) String category,
             @RequestParam(required = false) String location) {
-        List<Service> services = jobService.getAvailableServices(category, location);
-        return ResponseEntity.ok(services.stream().map(this::serviceMap).collect(Collectors.toList()));
+        return ResponseEntity.ok(jobService.getAvailableServices(category, location)
+                .stream().map(this::serviceMap).collect(Collectors.toList()));
     }
 
-    /** Browse all providers (public directory) */
     @GetMapping("/api/providers")
     public ResponseEntity<?> browseProviders(
             @RequestParam(required = false) String category,
             @RequestParam(required = false) String location) {
-        List<User> providers = userService.searchProviders(category, location);
-        return ResponseEntity.ok(providers.stream().map(this::providerMap).collect(Collectors.toList()));
+        return ResponseEntity.ok(userService.searchProviders(category, location)
+                .stream().map(this::providerMap).collect(Collectors.toList()));
     }
 
-    /** Browse open jobs (public — providers use this to find work) */
     @GetMapping("/api/jobs/open")
     public ResponseEntity<?> getOpenJobs(
             @RequestParam(required = false) String category,
             @RequestParam(required = false) String location) {
-        List<Job> jobs = jobService.getOpenJobs(category, location);
-        return ResponseEntity.ok(jobs.stream().map(this::jobMap).collect(Collectors.toList()));
+        return ResponseEntity.ok(jobService.getOpenJobs(category, location)
+                .stream().map(this::jobMap).collect(Collectors.toList()));
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  PROVIDER — DASHBOARD
-    // ══════════════════════════════════════════════════════════
-
+    // ── PROVIDER DASHBOARD ────────────────────────────────────
     @GetMapping("/api/provider/dashboard")
     public ResponseEntity<?> dashboard(Authentication auth) {
         try {
@@ -87,7 +55,7 @@ public class ProviderController {
             List<Service>     services  = jobService.getProviderServices(email);
             List<JobResponse> responses = jobService.getProviderResponses(email);
             List<Booking>     bookings  = jobService.getProviderBookings(email);
-            List<Job>         openJobs  = jobService.getOpenJobs(null, null);
+            List<Job>         openJobs  = jobService.getOpenJobs(null, null);  // ✅ full list
 
             long accepted   = responses.stream().filter(r -> r.getStatus() == JobResponse.ResponseStatus.ACCEPTED).count();
             long completed  = bookings.stream().filter(b -> b.getStatus() == Booking.BookingStatus.COMPLETED).count();
@@ -95,40 +63,71 @@ public class ProviderController {
                 b.getStatus() == Booking.BookingStatus.ACCEPTED ||
                 b.getStatus() == Booking.BookingStatus.IN_PROGRESS).count();
 
+            // Build real notifications
+            List<Map<String, Object>> notifications = new ArrayList<>();
+            int notifId = 1;
+            for (JobResponse r : responses) {
+                if (r.getStatus() == JobResponse.ResponseStatus.ACCEPTED) {
+                    Map<String, Object> n = new HashMap<>();
+                    n.put("id",   notifId++);
+                    n.put("icon", "✅");
+                    n.put("msg",  "<strong>" + (r.getJob().getNeeder() != null ? r.getJob().getNeeder().getName() : "Needer") + "</strong> accepted your response for <strong>" + r.getJob().getTitle() + "</strong>");
+                    n.put("time", r.getRespondedAt() != null ? r.getRespondedAt().toLocalDate().toString() : "");
+                    n.put("read", false);
+                    notifications.add(n);
+                }
+            }
+            for (Booking b : bookings) {
+                if (b.getStatus() == Booking.BookingStatus.PENDING) {
+                    Map<String, Object> n = new HashMap<>();
+                    n.put("id",   notifId++);
+                    n.put("icon", "📅");
+                    n.put("msg",  "<strong>" + b.getNeeder().getName() + "</strong> sent you a new booking request.");
+                    n.put("time", b.getCreatedAt() != null ? b.getCreatedAt().toLocalDate().toString() : "");
+                    n.put("read", false);
+                    notifications.add(n);
+                }
+            }
+            if (!openJobs.isEmpty()) {
+                Map<String, Object> n = new HashMap<>();
+                n.put("id",   notifId++);
+                n.put("icon", "📋");
+                n.put("msg",  "There are <strong>" + openJobs.size() + " open jobs</strong> available near you.");
+                n.put("time", "Now");
+                n.put("read", false);
+                notifications.add(n);
+            }
+
             Map<String, Object> data = new HashMap<>();
             data.put("name",           provider.getName());
             data.put("email",          provider.getEmail());
-            data.put("rating",         provider.getRating());
-            data.put("jobsCompleted",  provider.getJobsCompleted());
+            data.put("phone",          safe(provider.getPhone()));
+            data.put("location",       safe(provider.getLocation()));
+            data.put("bio",            safe(provider.getBio()));
+            data.put("rating",         provider.getRating() != null ? provider.getRating() : 0.0);
+            data.put("jobsCompleted",  provider.getJobsCompleted() != null ? provider.getJobsCompleted() : 0);
             data.put("serviceCount",   services.size());
             data.put("responsesTotal", responses.size());
             data.put("accepted",       accepted);
             data.put("completed",      completed);
             data.put("activeBookings", activeBook);
-            data.put("openJobsCount",  openJobs.size());
-            data.put("services",       services.stream().limit(5).map(this::serviceMap).collect(Collectors.toList()));
-            data.put("responses",      responses.stream().limit(5).map(this::responseMap).collect(Collectors.toList()));
-            data.put("bookings",       bookings.stream().limit(5).map(this::bookingMap).collect(Collectors.toList()));
-            data.put("notifications",  List.of(
-                Map.of("id",1,"icon","📋","msg","You have " + openJobs.size() + " open jobs near you.","time","Now","read",false)
-            ));
+            data.put("services",       services.stream().map(this::serviceMap).collect(Collectors.toList()));
+            data.put("responses",      responses.stream().map(this::responseMap).collect(Collectors.toList()));
+            data.put("bookings",       bookings.stream().map(this::bookingMap).collect(Collectors.toList()));
+            data.put("openJobs",       openJobs.stream().map(this::jobMap).collect(Collectors.toList())); // ✅ full list
+            data.put("notifications",  notifications);
 
             return ResponseEntity.ok(data);
         } catch (RuntimeException e) { return error(e.getMessage()); }
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  PROVIDER — SERVICES  (Flow B upload)
-    // ══════════════════════════════════════════════════════════
-
-    /** Get my services */
+    // ── SERVICES ──────────────────────────────────────────────
     @GetMapping("/api/provider/services")
     public ResponseEntity<?> getMyServices(Authentication auth) {
-        List<Service> services = jobService.getProviderServices(auth.getName());
-        return ResponseEntity.ok(services.stream().map(this::serviceMap).collect(Collectors.toList()));
+        return ResponseEntity.ok(jobService.getProviderServices(auth.getName())
+                .stream().map(this::serviceMap).collect(Collectors.toList()));
     }
 
-    /** Upload a new service */
     @PostMapping("/api/provider/services")
     public ResponseEntity<?> addService(@RequestBody Dto.ServiceRequest req, Authentication auth) {
         if (blank(req.getTitle()))    return error("Service title is required.");
@@ -139,60 +138,37 @@ public class ProviderController {
         } catch (RuntimeException e) { return error(e.getMessage()); }
     }
 
-    /** Update a service (e.g. pause/resume, change price) */
     @PutMapping("/api/provider/services/{id}")
-    public ResponseEntity<?> updateService(@PathVariable Long id,
-                                           @RequestBody Dto.ServiceRequest req,
-                                           Authentication auth) {
-        try {
-            Service svc = jobService.updateService(id, auth.getName(), req);
-            return ResponseEntity.ok(serviceMap(svc));
-        } catch (RuntimeException e) { return error(e.getMessage()); }
+    public ResponseEntity<?> updateService(@PathVariable Long id, @RequestBody Dto.ServiceRequest req, Authentication auth) {
+        try { return ResponseEntity.ok(serviceMap(jobService.updateService(id, auth.getName(), req))); }
+        catch (RuntimeException e) { return error(e.getMessage()); }
     }
 
-    /** Delete (soft-deactivate) a service */
     @DeleteMapping("/api/provider/services/{id}")
     public ResponseEntity<?> deleteService(@PathVariable Long id, Authentication auth) {
-        try {
-            jobService.deleteService(id, auth.getName());
-            return ResponseEntity.ok(new Dto.MessageResponse("Service removed."));
-        } catch (RuntimeException e) { return error(e.getMessage()); }
+        try { jobService.deleteService(id, auth.getName()); return ResponseEntity.ok(new Dto.MessageResponse("Service removed.")); }
+        catch (RuntimeException e) { return error(e.getMessage()); }
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  PROVIDER — JOBS (Flow A: provider browses and responds)
-    // ══════════════════════════════════════════════════════════
-
-    /** Browse open jobs posted by needers */
+    // ── JOBS ──────────────────────────────────────────────────
     @GetMapping("/api/provider/jobs")
     public ResponseEntity<?> browseJobs(
             @RequestParam(required = false) String category,
             @RequestParam(required = false) String location,
             Authentication auth) {
-        List<Job> jobs = jobService.getOpenJobs(category, location);
-        return ResponseEntity.ok(jobs.stream().map(this::jobMap).collect(Collectors.toList()));
+        return ResponseEntity.ok(jobService.getOpenJobs(category, location)
+                .stream().map(this::jobMap).collect(Collectors.toList()));
     }
 
-    /** Respond to a job */
     @PostMapping("/api/provider/jobs/{id}/respond")
-    public ResponseEntity<?> respondToJob(@PathVariable Long id,
-                                          @RequestBody Dto.JobResponseRequest req,
-                                          Authentication auth) {
-        try {
-            JobResponse resp = jobService.respondToJob(id, auth.getName(), req);
-            return ResponseEntity.ok(responseMap(resp));
-        } catch (RuntimeException e) { return error(e.getMessage()); }
+    public ResponseEntity<?> respondToJob(@PathVariable Long id, @RequestBody Dto.JobResponseRequest req, Authentication auth) {
+        try { return ResponseEntity.ok(responseMap(jobService.respondToJob(id, auth.getName(), req))); }
+        catch (RuntimeException e) { return error(e.getMessage()); }
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  PROVIDER — RESPONSES
-    // ══════════════════════════════════════════════════════════
-
-    /** Get all my responses, optionally filtered by status */
+    // ── RESPONSES ─────────────────────────────────────────────
     @GetMapping("/api/provider/responses")
-    public ResponseEntity<?> getMyResponses(
-            @RequestParam(required = false) String status,
-            Authentication auth) {
+    public ResponseEntity<?> getMyResponses(@RequestParam(required=false) String status, Authentication auth) {
         List<JobResponse> responses = jobService.getProviderResponses(auth.getName());
         if (status != null && !status.isBlank()) {
             try {
@@ -203,24 +179,15 @@ public class ProviderController {
         return ResponseEntity.ok(responses.stream().map(this::responseMap).collect(Collectors.toList()));
     }
 
-    /** Withdraw a pending response */
     @PutMapping("/api/provider/responses/{id}/withdraw")
     public ResponseEntity<?> withdrawResponse(@PathVariable Long id, Authentication auth) {
-        try {
-            JobResponse resp = jobService.withdrawResponse(id, auth.getName());
-            return ResponseEntity.ok(responseMap(resp));
-        } catch (RuntimeException e) { return error(e.getMessage()); }
+        try { return ResponseEntity.ok(responseMap(jobService.withdrawResponse(id, auth.getName()))); }
+        catch (RuntimeException e) { return error(e.getMessage()); }
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  PROVIDER — BOOKINGS
-    // ══════════════════════════════════════════════════════════
-
-    /** Get all bookings received, optionally filtered by status */
+    // ── BOOKINGS ──────────────────────────────────────────────
     @GetMapping("/api/provider/bookings")
-    public ResponseEntity<?> getMyBookings(
-            @RequestParam(required = false) String status,
-            Authentication auth) {
+    public ResponseEntity<?> getMyBookings(@RequestParam(required=false) String status, Authentication auth) {
         List<Booking> bookings = jobService.getProviderBookings(auth.getName());
         if (status != null && !status.isBlank()) {
             try {
@@ -231,73 +198,49 @@ public class ProviderController {
         return ResponseEntity.ok(bookings.stream().map(this::bookingMap).collect(Collectors.toList()));
     }
 
-    /** Accept a booking (PENDING → ACCEPTED) */
     @PutMapping("/api/provider/bookings/{id}/accept")
     public ResponseEntity<?> acceptBooking(@PathVariable Long id, Authentication auth) {
-        try {
-            Booking b = jobService.updateBookingStatus(id, auth.getName(), Booking.BookingStatus.ACCEPTED);
-            return ResponseEntity.ok(bookingMap(b));
-        } catch (RuntimeException e) { return error(e.getMessage()); }
+        try { return ResponseEntity.ok(bookingMap(jobService.updateBookingStatus(id, auth.getName(), Booking.BookingStatus.ACCEPTED))); }
+        catch (RuntimeException e) { return error(e.getMessage()); }
     }
 
-    /** Start a booking (ACCEPTED → IN_PROGRESS) */
     @PutMapping("/api/provider/bookings/{id}/start")
     public ResponseEntity<?> startBooking(@PathVariable Long id, Authentication auth) {
-        try {
-            Booking b = jobService.updateBookingStatus(id, auth.getName(), Booking.BookingStatus.IN_PROGRESS);
-            return ResponseEntity.ok(bookingMap(b));
-        } catch (RuntimeException e) { return error(e.getMessage()); }
+        try { return ResponseEntity.ok(bookingMap(jobService.updateBookingStatus(id, auth.getName(), Booking.BookingStatus.IN_PROGRESS))); }
+        catch (RuntimeException e) { return error(e.getMessage()); }
     }
 
-    /** Complete a booking (IN_PROGRESS → COMPLETED) */
     @PutMapping("/api/provider/bookings/{id}/complete")
     public ResponseEntity<?> completeBooking(@PathVariable Long id, Authentication auth) {
-        try {
-            Booking b = jobService.updateBookingStatus(id, auth.getName(), Booking.BookingStatus.COMPLETED);
-            return ResponseEntity.ok(bookingMap(b));
-        } catch (RuntimeException e) { return error(e.getMessage()); }
+        try { return ResponseEntity.ok(bookingMap(jobService.updateBookingStatus(id, auth.getName(), Booking.BookingStatus.COMPLETED))); }
+        catch (RuntimeException e) { return error(e.getMessage()); }
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  PROVIDER — PROFILE
-    // ══════════════════════════════════════════════════════════
-
+    // ── PROFILE ───────────────────────────────────────────────
     @PutMapping("/api/provider/profile")
-    public ResponseEntity<?> updateProfile(@RequestBody Dto.ProfileUpdateRequest req,
-                                           Authentication auth) {
+    public ResponseEntity<?> updateProfile(@RequestBody Dto.ProfileUpdateRequest req, Authentication auth) {
         try {
             User u = userService.updateProfile(auth.getName(), req);
-            return ResponseEntity.ok(Map.of(
-                "name",     u.getName(),
-                "email",    u.getEmail(),
-                "phone",    safe(u.getPhone()),
-                "location", safe(u.getLocation()),
-                "bio",      safe(u.getBio()),
-                "category", safe(u.getCategory())
-            ));
+            return ResponseEntity.ok(Map.of("name", u.getName(), "email", u.getEmail(),
+                "phone", safe(u.getPhone()), "location", safe(u.getLocation()),
+                "bio", safe(u.getBio()), "category", safe(u.getCategory())));
         } catch (RuntimeException e) { return error(e.getMessage()); }
     }
 
-    // ══════════════════════════════════════════════════════════
-    //  SERIALISATION HELPERS
-    // ══════════════════════════════════════════════════════════
-
+    // ── Serialisation ──────────────────────────────────────────
     private Map<String, Object> jobMap(Job j) {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id",           j.getId());
-        m.put("title",        j.getTitle());
-        m.put("category",     safe(j.getCategory()));
-        m.put("location",     safe(j.getLocation()));
-        m.put("budget",       safe(j.getBudget()));
-        m.put("duration",     safe(j.getDuration()));
-        m.put("description",  safe(j.getDescription()));
-        m.put("status",       j.getStatus().name().toLowerCase());
-        m.put("date",         j.getCreatedAt() != null ? j.getCreatedAt().toLocalDate().toString() : "");
-        m.put("icon",         icon(j.getCategory()));
-        if (j.getNeeder() != null) {
-            m.put("neederName", j.getNeeder().getName());
-            m.put("neederId",   j.getNeeder().getId());
-        }
+        m.put("id",          j.getId());
+        m.put("title",       j.getTitle());
+        m.put("category",    safe(j.getCategory()));
+        m.put("location",    safe(j.getLocation()));
+        m.put("budget",      safe(j.getBudget()));
+        m.put("duration",    safe(j.getDuration()));
+        m.put("description", safe(j.getDescription()));
+        m.put("status",      j.getStatus().name().toLowerCase());
+        m.put("date",        j.getCreatedAt() != null ? j.getCreatedAt().toLocalDate().toString() : "");
+        m.put("icon",        icon(j.getCategory()));
+        if (j.getNeeder() != null) { m.put("neederName", j.getNeeder().getName()); m.put("neederId", j.getNeeder().getId()); }
         return m;
     }
 
@@ -316,7 +259,6 @@ public class ProviderController {
             m.put("providerName",   s.getProvider().getName());
             m.put("providerId",     s.getProvider().getId());
             m.put("providerRating", s.getProvider().getRating() != null ? s.getProvider().getRating() : 0.0);
-            m.put("providerLoc",    safe(s.getProvider().getLocation()));
         }
         return m;
     }
@@ -333,15 +275,9 @@ public class ProviderController {
             m.put("jobTitle",   r.getJob().getTitle());
             m.put("jobBudget",  safe(r.getJob().getBudget()));
             m.put("icon",       icon(r.getJob().getCategory()));
-            if (r.getJob().getNeeder() != null) {
-                m.put("neederName", r.getJob().getNeeder().getName());
-                m.put("neederId",   r.getJob().getNeeder().getId());
-            }
+            if (r.getJob().getNeeder() != null) { m.put("neederName", r.getJob().getNeeder().getName()); }
         }
-        if (r.getProvider() != null) {
-            m.put("providerName", r.getProvider().getName());
-            m.put("providerId",   r.getProvider().getId());
-        }
+        if (r.getProvider() != null) { m.put("providerName", r.getProvider().getName()); m.put("providerId", r.getProvider().getId()); }
         return m;
     }
 
@@ -352,21 +288,10 @@ public class ProviderController {
         m.put("agreedPrice", safe(b.getAgreedPrice()));
         m.put("notes",       safe(b.getNotes()));
         m.put("date",        b.getCreatedAt() != null ? b.getCreatedAt().toLocalDate().toString() : "");
-        if (b.getNeeder() != null) {
-            m.put("neederName", b.getNeeder().getName());
-            m.put("neederId",   b.getNeeder().getId());
-        }
-        if (b.getProvider() != null) {
-            m.put("providerName", b.getProvider().getName());
-            m.put("providerId",   b.getProvider().getId());
-        }
-        if (b.getJob() != null) {
-            m.put("title", b.getJob().getTitle());
-            m.put("icon",  icon(b.getJob().getCategory()));
-        } else if (b.getService() != null) {
-            m.put("title", b.getService().getTitle());
-            m.put("icon",  icon(b.getService().getCategory()));
-        }
+        if (b.getNeeder()   != null) { m.put("neederName",   b.getNeeder().getName());   m.put("neederId",   b.getNeeder().getId()); }
+        if (b.getProvider() != null) { m.put("providerName", b.getProvider().getName()); m.put("providerId", b.getProvider().getId()); }
+        if (b.getJob()      != null) { m.put("title", b.getJob().getTitle());      m.put("icon", icon(b.getJob().getCategory())); }
+        else if (b.getService() != null) { m.put("title", b.getService().getTitle()); m.put("icon", icon(b.getService().getCategory())); }
         return m;
     }
 
@@ -376,7 +301,6 @@ public class ProviderController {
         m.put("name",         u.getName());
         m.put("category",     safe(u.getCategory()));
         m.put("location",     safe(u.getLocation()));
-        m.put("bio",          safe(u.getBio()));
         m.put("rating",       u.getRating() != null ? u.getRating() : 0.0);
         m.put("jobsCompleted",u.getJobsCompleted() != null ? u.getJobsCompleted() : 0);
         m.put("availability", u.getAvailability() != null ? u.getAvailability().name().toLowerCase() : "available");
@@ -384,14 +308,12 @@ public class ProviderController {
         return m;
     }
 
-    // ── Utilities ──────────────────────────────────────────────
     private ResponseEntity<Dto.ErrorResponse> error(String msg) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new Dto.ErrorResponse(msg, 400));
     }
     private boolean blank(String s) { return s == null || s.isBlank(); }
     private String  safe(String s)  { return s != null ? s : ""; }
-
-    private String icon(String cat) {
+    private String  icon(String cat) {
         if (cat == null) return "🛠️";
         return switch (cat.toLowerCase()) {
             case "plumbing"                          -> "🔧";
